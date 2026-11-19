@@ -1,0 +1,45 @@
+name: Test and deliver project artifacts
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install image and numerical dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run correctness and integration tests
+        run: python -m unittest discover -s tests -v
+      - name: Run reproducible synthetic comparisons
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: python -m seam_carving demo --output output/ci-demo
+      - name: Package source
+        run: python scripts/package_project.py
+      - name: Deliver source and comparison artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: seam-carving-${{ matrix.os }}-py${{ matrix.python }}
+          path: |
+            output/seam-carving-project.zip
+            output/ci-demo/
+          if-no-files-found: error
+          retention-days: 14
