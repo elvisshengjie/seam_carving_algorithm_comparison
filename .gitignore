@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+output/
+tmp/
+.pytest_cache/
+
+# Course handouts remain local; publish the project source and documentation.
+/Assignment 2 (1).pdf
+/Rubrics.pdf
+
+# Office lock files
+~$*
