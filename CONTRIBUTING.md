@@ -1,4 +1,4 @@
-# Working on the project together
+# Contributing
 
 ## Get a local copy
 
@@ -22,26 +22,28 @@ the code; it does not automatically give them write access.
 
 ## Make a change
 
-Update your copy first, so your commit goes on top of everyone else's work:
+Update your local copy and create a branch for your task:
 
 ```powershell
 git switch main
 git pull --ff-only
+git switch -c improve-comparison-results
 ```
 
 Edit the code or documentation, run the tests, then commit only the relevant files:
 
 ```powershell
 python -m unittest discover -s tests -v
+python scripts/package_project.py
 git status
-git add seam_carving tests README.md
+git add path/to/changed-file
 git commit -m "Describe the change"
-git push
+git push -u origin improve-comparison-results
 ```
 
-Change the staged paths to match your task. For larger changes, push a separate
-branch (`git switch -c my-change`, then `git push -u origin my-change`) and open
-a pull request against `main` so a teammate can review it. GitHub Actions runs
+Replace the example branch name and file path with your own. Open a pull request
+against `main`, explain what changed and how you tested it, and ask a teammate
+to review it. GitHub Actions runs
 the tests, a demo comparison and the source packaging on every push and pull
 request; check that the run is green before relying on it.
 
