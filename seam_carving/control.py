@@ -9,6 +9,8 @@ class ComputationCancelled(Exception):
 
 
 class RunControl:
+    """RunControl() with no arguments does nothing, so solvers can always call checkpoint()."""
+
     def __init__(self, should_cancel: Callable[[], bool] | None = None,
                  on_status: Callable[[str], None] | None = None,
                  min_interval: float = 0.15):
@@ -18,8 +20,6 @@ class RunControl:
         self.last_status = float("-inf")
 
     def checkpoint(self, message: str | None = None) -> None:
-        if self.should_cancel is not None and self.should_cancel():
-            raise ComputationCancelled()
         if message is not None and self.on_status is not None:
             now = perf_counter()
             if now - self.last_status >= self.min_interval:

@@ -8,6 +8,7 @@ from time import perf_counter
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+import numpy as np
 from PIL import Image, ImageTk
 
 from .carver import resize, validate_target
@@ -99,6 +100,16 @@ class SeamCarvingApp:
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.poll_id = root.after(80, self.poll)
 
+    def set_running(self, running: bool):
+        """While a worker runs, only Cancel is usable; results must be re-enabled explicitly."""
+        idle = "disabled" if running else "normal"
+        for button in (self.load_button, self.small_button, self.run_button):
+            button.configure(state=idle)
+        self.cancel_button.configure(state="normal" if running else "disabled")
+        if running:
+            self.save_button.configure(state="disabled")
+            self.gif_button.configure(state="disabled")
+
     def show(self, widget, array):
         # Keep one scale and one canvas for both panels. Fitting each image
         # separately would enlarge the result and conceal the removed pixels.
@@ -150,8 +161,7 @@ class SeamCarvingApp:
         self.show(self.right, self.original)
         self.show_dimensions(self.original, "Before resizing")
         self.progress.configure(value=0)
-        self.run_button.configure(state="normal")
-        self.small_button.configure(state="normal")
+        self.set_running(False)
         self.save_button.configure(state="disabled")
         self.gif_button.configure(state="disabled")
         self.status.set(f"{name}: {width} x {height}. Choose smaller target dimensions, then Resize.")
@@ -163,7 +173,6 @@ class SeamCarvingApp:
         image.thumbnail((120, 80), Image.Resampling.LANCZOS)
         # This explicitly changes the working input for ALL algorithms; the
         # source file is preserved. Comparisons must use this same test input.
-        import numpy as np
         self.set_input(np.array(image), f"{self.input_name} (small test copy)")
         self.status.set(f"Small test copy: {image.width} x {image.height}. "
                         "Use the same copy to compare all algorithms. Open the source image to restore full size.")
@@ -201,13 +210,8 @@ class SeamCarvingApp:
         self.result = self.recorder = None
         self.show(self.right, image)
         self.show_dimensions(image, "Starting")
-        self.progress.configure(maximum=max(1, image.shape[1] - width + image.shape[0] - height), value=0)
-        self.load_button.configure(state="disabled")
-        self.small_button.configure(state="disabled")
-        self.run_button.configure(state="disabled")
-        self.save_button.configure(state="disabled")
-        self.gif_button.configure(state="disabled")
-        self.cancel_button.configure(state="normal")
+        self.progress.configure(maximum=max(1, total_seams), value=0)
+        self.set_running(True)
         self.status.set(f"Running {algorithm}...")
         directory = Path(self.temp.name) / f"run-{self.run_number}"
         # The worker owns only plain data, a queue, and a cancellation event.
@@ -262,10 +266,7 @@ class SeamCarvingApp:
                     self.phase = "Removing selected seam; red pixels show its path."
                     continue
                 self.busy = False
-                self.load_button.configure(state="normal")
-                self.small_button.configure(state="normal")
-                self.run_button.configure(state="normal")
-                self.cancel_button.configure(state="disabled")
+                self.set_running(False)
                 if self.closing:
                     self.close()
                     return

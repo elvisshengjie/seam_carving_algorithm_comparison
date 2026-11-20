@@ -1,5 +1,6 @@
 """Image I/O, seam overlays, fixed-size animation frames, and result panels."""
 
+from dataclasses import asdict, fields
 from pathlib import Path
 import csv
 import json
@@ -94,16 +95,11 @@ class FrameRecorder:
         path.parent.mkdir(parents=True, exist_ok=True)
         # Paletted frames use less memory than retaining full RGB animation frames.
         frames = []
-        try:
-            for frame_path in self.paths:
-                with Image.open(frame_path) as image:
-                    frames.append(image.convert("RGB").quantize(
-                        colors=256, method=Image.Quantize.FASTOCTREE))
-            frames[0].save(path, save_all=True, append_images=frames[1:],
-                           duration=duration_ms, loop=0, disposal=2, optimize=False)
-        finally:
-            for frame in frames:
-                frame.close()
+        for frame_path in self.paths:
+            with Image.open(frame_path) as image:
+                frames.append(image.convert("RGB").quantize(colors=256, method=Image.Quantize.FASTOCTREE))
+        frames[0].save(path, save_all=True, append_images=frames[1:],
+                       duration=duration_ms, loop=0, disposal=2, optimize=False)
 
 
 def save_run(result: ResizeResult, directory: str | Path, metadata: dict) -> None:
@@ -111,9 +107,9 @@ def save_run(result: ResizeResult, directory: str | Path, metadata: dict) -> Non
     directory.mkdir(parents=True, exist_ok=True)
     save_image(result.image, directory / "resized.png")
     with (directory / "steps.csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(Step.__dataclass_fields__))
+        writer = csv.DictWriter(stream, fieldnames=[field.name for field in fields(Step)])
         writer.writeheader()
-        writer.writerows(step.to_dict() for step in result.steps)
+        writer.writerows(asdict(step) for step in result.steps)
     report = dict(metadata, elapsed_seconds=result.elapsed_seconds,
                   seams_removed=len(result.steps),
                   output_width=result.image.shape[1], output_height=result.image.shape[0])

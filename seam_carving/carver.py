@@ -1,9 +1,8 @@
 """Shared resizing pipeline: recompute energy and remove one seam per step."""
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Callable
-import operator
 import numpy as np
 
 from .energy import compute_energy, validate_image
@@ -21,9 +20,6 @@ class Step:
     energy_seconds: float
     find_seconds: float
     remove_seconds: float
-
-    def to_dict(self) -> dict:
-        return asdict(self)
 
 
 @dataclass
@@ -61,12 +57,10 @@ def remove_seam(image: np.ndarray, seam: Seam) -> np.ndarray:
 
 
 def validate_target(image: np.ndarray, width: int, height: int) -> tuple[int, int]:
-    try:
-        if isinstance(width, (bool, np.bool_)) or isinstance(height, (bool, np.bool_)):
-            raise TypeError
-        width, height = operator.index(width), operator.index(height)
-    except TypeError as exc:
-        raise ValueError("Target dimensions must be integers.") from exc
+    for value in (width, height):
+        if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+            raise ValueError("Target dimensions must be integers.")
+    width, height = int(width), int(height)
     if not 1 <= width <= image.shape[1] or not 1 <= height <= image.shape[0]:
         raise ValueError("Targets must be positive and no larger than the input image.")
     return width, height
@@ -89,27 +83,25 @@ def resize(image: np.ndarray, width: int, height: int, algorithm: str = "dp",
         raise ValueError(f"Algorithm must be one of {ALGORITHMS}.")
     if order not in ("width-first", "height-first"):
         raise ValueError("Order must be width-first or height-first.")
-    directions = ("vertical", "horizontal")
+    control = control or RunControl()
+    # Seams to remove in each direction: vertical seams reduce width, horizontal reduce height.
+    plan = [("vertical", image.shape[1] - width), ("horizontal", image.shape[0] - height)]
     if order == "height-first":
-        directions = directions[::-1]
+        plan.reverse()
+    total_steps = sum(count for _, count in plan)
     current = image.copy()
     steps: list[Step] = []
-    total_steps = image.shape[1] - width + image.shape[0] - height
     started = perf_counter()
-    if control is not None:
-        control.checkpoint()
-    for direction in directions:
-        count = current.shape[1] - width if direction == "vertical" else current.shape[0] - height
+    control.checkpoint()
+    for direction, count in plan:
         for _ in range(count):
-            if control is not None:
-                control.checkpoint(f"Seam {len(steps) + 1}/{total_steps}: calculating energy...")
+            control.checkpoint(f"Seam {len(steps) + 1}/{total_steps}: calculating energy...")
             t0 = perf_counter()
-            energy = compute_energy(current)
+            energy = compute_energy(current)  # recomputed on the current image every step
             t1 = perf_counter()
             seam = find_seam(energy, algorithm, direction, control=control)
             t2 = perf_counter()
-            if control is not None:
-                control.checkpoint()
+            control.checkpoint()
             next_image = remove_seam(current, seam)
             t3 = perf_counter()
             step = Step(len(steps) + 1, direction, current.shape[1], current.shape[0],

@@ -24,11 +24,32 @@ def compare(input_path: str | Path, width: int, height: int, directory: str | Pa
     validate_target(original, width, height)
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
+    source = str(Path(input_path).resolve())
+
+    seam_rows, checks = _compare_first_seams(original, directory)
+    summary, outputs = _time_full_resizes(original, width, height, repeats, order, directory, source)
+    _save_comparison_figures(original, width, height, summary, outputs, directory)
+
+    report = dict(input=source, input_size=[original.shape[1], original.shape[0]],
+                  target_size=[width, height], repeats=repeats, order=order,
+                  environment=dict(python=platform.python_version(), numpy=np.__version__,
+                                   pillow=PIL.__version__, platform=platform.platform()),
+                  timings=summary, initial_seams=seam_rows, initial_seam_checks=checks,
+                  notes=["Resize timings exclude file I/O, overlays, GIFs, and energy/seam previews.",
+                         "Initial seam timings include selection only; energy is precomputed.",
+                         "DP/graph optimality is per fixed energy map, not a global guarantee for multiple removals.",
+                         "Tied optimal seams can differ and produce different later images.",
+                         "Removed energy is not an objective measure of perceptual image quality."])
+    (directory / "summary.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    _write_results_markdown(report, Path(input_path).name, directory)
+    return report
+
+
+def _compare_first_seams(original: np.ndarray, directory: Path) -> tuple[list[dict], dict]:
+    """Run every method on EXACTLY the same fixed energy map and compare seam costs."""
     energy = compute_energy(original)
     save_image(energy_image(energy), directory / "energy.png")
-    seam_rows = []
-    panels = []
-    # This evaluates all methods on EXACTLY the same fixed energy map.
+    seam_rows, panels = [], []
     for direction in DIRECTIONS:
         for algorithm in ALGORITHMS:
             start = perf_counter()
@@ -42,6 +63,18 @@ def compare(input_path: str | Path, width: int, height: int, directory: str | Pa
             save_image(overlay, directory / f"{algorithm}_{direction}_seam.png")
     make_panel(panels).save(directory / "first_seams.png")
 
+    # DP and graph cut are both exact, so their costs must agree; greedy can only be worse.
+    checks = {}
+    for direction in DIRECTIONS:
+        costs = {row["algorithm"]: row["cost"] for row in seam_rows if row["direction"] == direction}
+        checks[direction] = dict(dp_graph_equal_cost=bool(np.isclose(costs["dp"], costs["graph"], rtol=1e-9, atol=1e-8)),
+                                 greedy_excess_energy=costs["greedy"] - costs["dp"])
+    return seam_rows, checks
+
+
+def _time_full_resizes(original: np.ndarray, width: int, height: int, repeats: int, order: str,
+                       directory: Path, source: str) -> tuple[dict, dict]:
+    """Time complete resizes; keep the first run's image of each method for visual comparison."""
     samples = {algorithm: [] for algorithm in ALGORITHMS}
     raw_rows = []
     outputs = {}
@@ -58,18 +91,22 @@ def compare(input_path: str | Path, width: int, height: int, directory: str | Pa
                                  remove_seconds=sum(s.remove_seconds for s in result.steps)))
             if repeat == 0:
                 outputs[algorithm] = result.image
-                save_run(result, directory / algorithm,
-                         dict(algorithm=algorithm, order=order, input=str(Path(input_path).resolve())))
+                save_run(result, directory / algorithm, dict(algorithm=algorithm, order=order, input=source))
     with (directory / "timings.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(raw_rows[0]))
         writer.writeheader()
         writer.writerows(raw_rows)
-    summary = {}
-    for algorithm, values in samples.items():
-        summary[algorithm] = dict(mean_seconds=float(np.mean(values)),
-                                  median_seconds=float(np.median(values)),
-                                  std_seconds=float(np.std(values)),
-                                  runs_seconds=values)
+    summary = {algorithm: dict(mean_seconds=float(np.mean(values)),
+                               median_seconds=float(np.median(values)),
+                               std_seconds=float(np.std(values)),
+                               runs_seconds=values)
+               for algorithm, values in samples.items()}
+    return summary, outputs
+
+
+def _save_comparison_figures(original: np.ndarray, width: int, height: int, summary: dict,
+                             outputs: dict, directory: Path) -> None:
+    """Seam carving results next to the cropping and scaling baselines from the brief."""
     image = Image.fromarray(original)
     x, y = (image.width - width) // 2, (image.height - height) // 2
     cropped = np.array(image.crop((x, y, x + width, y + height)))
@@ -82,36 +119,22 @@ def compare(input_path: str | Path, width: int, height: int, directory: str | Pa
     make_panel(panels).save(directory / "comparison.png")
     _timing_chart(summary).save(directory / "runtime.png")
 
-    checks = {}
-    for direction in DIRECTIONS:
-        costs = {row["algorithm"]: row["cost"] for row in seam_rows if row["direction"] == direction}
-        checks[direction] = dict(dp_graph_equal_cost=bool(np.isclose(costs["dp"], costs["graph"], rtol=1e-9, atol=1e-8)),
-                                 greedy_excess_energy=costs["greedy"] - costs["dp"])
-    report = dict(input=str(Path(input_path).resolve()), input_size=[image.width, image.height],
-                  target_size=[width, height], repeats=repeats, order=order,
-                  environment=dict(python=platform.python_version(), numpy=np.__version__,
-                                   pillow=PIL.__version__, platform=platform.platform()),
-                  timings=summary, initial_seams=seam_rows, initial_seam_checks=checks,
-                  notes=["Resize timings exclude file I/O, overlays, GIFs, and energy/seam previews.",
-                         "Initial seam timings include selection only; energy is precomputed.",
-                         "DP/graph optimality is per fixed energy map, not a global guarantee for multiple removals.",
-                         "Tied optimal seams can differ and produce different later images.",
-                         "Removed energy is not an objective measure of perceptual image quality."])
-    (directory / "summary.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    lines = ["# Measured comparison", "", f"Input: `{Path(input_path).name}`",
-             f"Size: {image.width} x {image.height} -> {width} x {height}",
-             f"Repeats: {repeats}; removal order: {order}", "",
+
+def _write_results_markdown(report: dict, input_name: str, directory: Path) -> None:
+    (input_width, input_height), (width, height) = report["input_size"], report["target_size"]
+    lines = ["# Measured comparison", "", f"Input: `{input_name}`",
+             f"Size: {input_width} x {input_height} -> {width} x {height}",
+             f"Repeats: {report['repeats']}; removal order: {report['order']}", "",
              "| Algorithm | Median seconds | Mean seconds | Std seconds |",
              "| --- | ---: | ---: | ---: |"]
     for a in ALGORITHMS:
-        s = summary[a]
+        s = report["timings"][a]
         lines.append(f"| {a} | {s['median_seconds']:.6f} | {s['mean_seconds']:.6f} | {s['std_seconds']:.6f} |")
     lines += ["", "![Resized images](comparison.png)", "", "![Initial seams](first_seams.png)", "",
               "Inspect foreground shape, straight lines, and texture in the output images. "
               "These synthetic results do not establish quality on natural photographs.", "",
               "See summary.json for initial seam costs, environment, and interpretation limits."]
     (directory / "results.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return report
 
 
 def _timing_chart(summary: dict) -> Image.Image:

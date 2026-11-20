@@ -31,15 +31,14 @@ def _validate_energy(energy: np.ndarray) -> np.ndarray:
     return energy
 
 
-def _dp(energy: np.ndarray, control: RunControl | None = None) -> np.ndarray:
+def _dp(energy: np.ndarray, control: RunControl) -> np.ndarray:
     height, width = energy.shape
     previous = energy[0].copy()
     # Only the previous cost row is needed, but reconstruction needs parents.
     parents = np.zeros((height, width), dtype=np.int8)
     columns = np.arange(width)
     for row in range(1, height):
-        if control is not None:
-            control.checkpoint()
+        control.checkpoint()
         padded = np.pad(previous, (1, 1), constant_values=np.inf)
         candidates = np.stack((padded[:-2], padded[1:-1], padded[2:]))
         choices = np.argmin(candidates, axis=0)
@@ -48,26 +47,23 @@ def _dp(energy: np.ndarray, control: RunControl | None = None) -> np.ndarray:
     seam = np.empty(height, dtype=np.int64)
     seam[-1] = int(np.argmin(previous))
     for row in range(height - 1, 0, -1):
-        if control is not None and row % 256 == 0:
-            control.checkpoint()
         seam[row - 1] = seam[row] + int(parents[row, seam[row]])
     return seam
 
 
-def _greedy(energy: np.ndarray, control: RunControl | None = None) -> np.ndarray:
+def _greedy(energy: np.ndarray, control: RunControl) -> np.ndarray:
     height, width = energy.shape
     seam = np.empty(height, dtype=np.int64)
     seam[0] = int(np.argmin(energy[0]))
     for row in range(1, height):
-        if control is not None:
-            control.checkpoint()
+        control.checkpoint()
         left = max(0, int(seam[row - 1]) - 1)
         right = min(width, int(seam[row - 1]) + 2)
         seam[row] = left + int(np.argmin(energy[row, left:right]))
     return seam
 
 
-def _graph_cut(energy: np.ndarray, control: RunControl | None = None) -> np.ndarray:
+def _graph_cut(energy: np.ndarray, control: RunControl) -> np.ndarray:
     """Encode each possible seam pixel as a finite-capacity cut edge.
 
     Row r has boundary nodes b=0..width. Edge (r,b)->(r,b+1) costs
@@ -89,29 +85,23 @@ def _graph_cut(energy: np.ndarray, control: RunControl | None = None) -> np.ndar
     # Every all-finite cut costs <= height*width; this dominates that bound.
     infinite = float(height * width + 1)
     for row in range(height):
-        if control is not None:
-            control.checkpoint(f"Building graph: row {row + 1}/{height}...")
+        control.checkpoint(f"Building graph: row {row + 1}/{height}...")
         base = row * stride
         network.add_edge(source, base, infinite)
         network.add_edge(base + width, sink, infinite)
         for col in range(width):
-            if control is not None and col % 256 == 0:
-                control.checkpoint()
             network.add_edge(base + col, base + col + 1, float(costs[row, col]))
             network.add_edge(base + col + 1, base + col, infinite)
         if row + 1 < height:
             below = base + stride
             for boundary in range(1, width + 1):
-                if control is not None and boundary % 256 == 0:
-                    control.checkpoint()
                 network.add_edge(base + boundary, below + boundary - 1, infinite)
                 network.add_edge(below + boundary, base + boundary - 1, infinite)
     network.max_flow(source, sink)
     reachable = network.source_side(source)
     seam = np.empty(height, dtype=np.int64)
+    control.checkpoint("Reading minimum cut...")
     for row in range(height):
-        if control is not None:
-            control.checkpoint("Reading minimum cut...")
         seam[row] = max(col for col in range(width) if row * stride + col in reachable)
     return seam
 
@@ -125,8 +115,8 @@ def find_seam(energy: np.ndarray, algorithm: str = "dp",
         raise ValueError(f"Algorithm must be one of {ALGORITHMS}.")
     if direction not in DIRECTIONS:
         raise ValueError(f"Direction must be one of {DIRECTIONS}.")
-    if control is not None:
-        control.checkpoint()
+    control = control or RunControl()
+    control.checkpoint()
     energy = _validate_energy(energy)
     oriented = energy if direction == "vertical" else energy.T
     solver = {"dp": _dp, "greedy": _greedy, "graph": _graph_cut}[algorithm]
